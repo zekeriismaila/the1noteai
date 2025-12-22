@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { 
@@ -17,7 +17,8 @@ import {
   Clock,
   Trash2,
   MessageSquare,
-  Calculator
+  Calculator,
+  RefreshCw
 } from "lucide-react";
 import FileUpload from "@/components/FileUpload";
 import ToolsPanel from "@/components/ToolsPanel";
@@ -42,15 +43,9 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  useEffect(() => {
-    if (!user) {
-      navigate("/auth");
-      return;
-    }
-    fetchNotes();
-  }, [user, navigate]);
-
-  const fetchNotes = async () => {
+  const fetchNotes = useCallback(async () => {
+    if (!user) return;
+    
     try {
       const { data, error } = await supabase
         .from("notes")
@@ -61,22 +56,37 @@ export default function Dashboard() {
       setNotes(data || []);
     } catch (error) {
       console.error("Error fetching notes:", error);
-      toast({
-        variant: "destructive",
-        title: "Error loading notes",
-        description: "Please try refreshing the page.",
-      });
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/auth");
+      return;
+    }
+    fetchNotes();
+  }, [user, navigate, fetchNotes]);
+
+  // Poll for processing updates
+  useEffect(() => {
+    const hasProcessing = notes.some(n => n.status === "processing" || n.status === "uploading");
+    
+    if (hasProcessing) {
+      const interval = setInterval(fetchNotes, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [notes, fetchNotes]);
 
   const handleSignOut = async () => {
     await signOut();
     navigate("/");
   };
 
-  const handleDeleteNote = async (noteId: string) => {
+  const handleDeleteNote = async (noteId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
     try {
       const { error } = await supabase
         .from("notes")
@@ -116,8 +126,8 @@ export default function Dashboard() {
         );
       case "processing":
         return (
-          <Badge variant="secondary" className="bg-warning/20 text-warning">
-            <Clock className="w-3 h-3 mr-1" />
+          <Badge variant="secondary" className="bg-warning/20 text-warning border-warning/30">
+            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
             Processing
           </Badge>
         );
@@ -131,7 +141,7 @@ export default function Dashboard() {
       default:
         return (
           <Badge variant="secondary">
-            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+            <Clock className="w-3 h-3 mr-1" />
             Uploading
           </Badge>
         );
@@ -181,6 +191,7 @@ export default function Dashboard() {
               size="icon"
               onClick={() => setShowTools(!showTools)}
               className={showTools ? "bg-accent text-accent-foreground" : ""}
+              title="Toggle Tools"
             >
               <Calculator className="w-5 h-5" />
             </Button>
@@ -198,32 +209,43 @@ export default function Dashboard() {
           {/* Upload Section */}
           {showUpload ? (
             <Card className="mb-8">
-              <CardHeader>
-                <CardTitle>Upload Lecture Notes</CardTitle>
-                <CardDescription>
-                  Upload PDF, DOC, DOCX, PPT, or PPTX files. Maximum 50MB per file.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
+              <CardContent className="pt-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="font-semibold">Upload Lecture Notes</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Upload PDF, DOC, DOCX, PPT, or PPTX files. Maximum 50MB per file.
+                    </p>
+                  </div>
+                  <Button 
+                    variant="ghost" 
+                    size="sm"
+                    onClick={() => setShowUpload(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
                 <FileUpload onUploadComplete={handleUploadComplete} />
-                <Button 
-                  variant="ghost" 
-                  className="mt-4"
-                  onClick={() => setShowUpload(false)}
-                >
-                  Cancel
-                </Button>
               </CardContent>
             </Card>
           ) : (
-            <Button 
-              onClick={() => setShowUpload(true)} 
-              className="mb-8"
-              size="lg"
-            >
-              <Upload className="w-5 h-5 mr-2" />
-              Upload Notes
-            </Button>
+            <div className="flex items-center gap-4 mb-8">
+              <Button 
+                onClick={() => setShowUpload(true)} 
+                size="lg"
+              >
+                <Upload className="w-5 h-5 mr-2" />
+                Upload Notes
+              </Button>
+              <Button 
+                variant="outline" 
+                size="icon"
+                onClick={fetchNotes}
+                title="Refresh"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </Button>
+            </div>
           )}
 
           {/* Notes List */}
@@ -243,7 +265,11 @@ export default function Dashboard() {
             ) : (
               <div className="grid gap-4">
                 {notes.map((note) => (
-                  <Card key={note.id} className="hover:shadow-md transition-shadow">
+                  <Card 
+                    key={note.id} 
+                    className={`hover:shadow-md transition-shadow ${note.status === "ready" ? "cursor-pointer" : ""}`}
+                    onClick={() => note.status === "ready" && navigate(`/solver/${note.id}`)}
+                  >
                     <CardContent className="flex items-center justify-between py-4">
                       <div className="flex items-center gap-4">
                         <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
@@ -271,7 +297,10 @@ export default function Dashboard() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => navigate(`/solver/${note.id}`)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/solver/${note.id}`);
+                            }}
                           >
                             <MessageSquare className="w-4 h-4 mr-2" />
                             Study
@@ -281,7 +310,7 @@ export default function Dashboard() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDeleteNote(note.id)}
+                          onClick={(e) => handleDeleteNote(note.id, e)}
                         >
                           <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
                         </Button>
@@ -296,7 +325,7 @@ export default function Dashboard() {
 
         {/* Tools Panel */}
         {showTools && (
-          <aside className="w-80 border-l bg-card p-4 overflow-y-auto max-h-[calc(100vh-73px)]">
+          <aside className="w-80 border-l bg-card p-4 overflow-y-auto max-h-[calc(100vh-73px)] sticky top-[73px]">
             <ToolsPanel />
           </aside>
         )}

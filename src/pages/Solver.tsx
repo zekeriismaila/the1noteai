@@ -4,7 +4,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { 
@@ -13,7 +12,6 @@ import {
   Send, 
   Loader2, 
   Calculator,
-  FileText,
   MessageSquare
 } from "lucide-react";
 import ToolsPanel from "@/components/ToolsPanel";
@@ -56,7 +54,6 @@ export default function Solver() {
   }, [user, noteId, navigate]);
 
   useEffect(() => {
-    // Scroll to bottom when messages change
     if (scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: "smooth" });
     }
@@ -64,7 +61,6 @@ export default function Solver() {
 
   const fetchNoteAndMessages = async () => {
     try {
-      // Fetch note
       const { data: noteData, error: noteError } = await supabase
         .from("notes")
         .select("*")
@@ -74,7 +70,6 @@ export default function Solver() {
       if (noteError) throw noteError;
       setNote(noteData);
 
-      // Fetch messages
       const { data: messagesData, error: messagesError } = await supabase
         .from("chat_messages")
         .select("*")
@@ -107,7 +102,6 @@ export default function Solver() {
     setInput("");
     setIsSending(true);
 
-    // Optimistically add user message
     const tempUserMsg: Message = {
       id: `temp-${Date.now()}`,
       role: "user",
@@ -117,7 +111,6 @@ export default function Solver() {
     setMessages(prev => [...prev, tempUserMsg]);
 
     try {
-      // Save user message
       const { data: savedUserMsg, error: userMsgError } = await supabase
         .from("chat_messages")
         .insert({
@@ -131,26 +124,30 @@ export default function Solver() {
 
       if (userMsgError) throw userMsgError;
 
-      // Update with actual message
       setMessages(prev => prev.map(m => 
         m.id === tempUserMsg.id ? { ...savedUserMsg, role: savedUserMsg.role as "user" | "assistant" } : m
       ));
 
-      // Call AI for response
       const { data: aiResponse, error: aiError } = await supabase.functions.invoke("math-solver", {
         body: {
           message: userMessage,
           noteContent: note.processed_content,
-          conversationHistory: messages.map(m => ({
+          conversationHistory: messages.slice(-10).map(m => ({
             role: m.role,
             content: m.content,
           })),
         },
       });
 
-      if (aiError) throw aiError;
+      if (aiError) {
+        console.error("AI Error:", aiError);
+        throw new Error(aiError.message || "Failed to get AI response");
+      }
 
-      // Save and display AI response
+      if (aiResponse?.error) {
+        throw new Error(aiResponse.error);
+      }
+
       const { data: savedAiMsg, error: aiMsgError } = await supabase
         .from("chat_messages")
         .insert({
@@ -170,13 +167,16 @@ export default function Solver() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to get response. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to get response. Please try again.",
       });
-      // Remove optimistic message
       setMessages(prev => prev.filter(m => m.id !== tempUserMsg.id));
     } finally {
       setIsSending(false);
     }
+  };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    setInput(suggestion);
   };
 
   if (isLoading) {
@@ -199,11 +199,11 @@ export default function Solver() {
             <div className="w-10 h-10 rounded-xl bg-primary text-primary-foreground flex items-center justify-center">
               <BookOpen className="w-5 h-5" />
             </div>
-            <div>
-              <h1 className="font-bold text-lg truncate max-w-[200px] md:max-w-none">
+            <div className="overflow-hidden">
+              <h1 className="font-bold text-lg truncate max-w-[200px] md:max-w-[400px]">
                 {note?.file_name}
               </h1>
-              <p className="text-xs text-muted-foreground">Math Solver</p>
+              <p className="text-xs text-muted-foreground">Math Solver & Tutor</p>
             </div>
           </div>
           
@@ -228,22 +228,22 @@ export default function Solver() {
                 <div className="text-center py-12">
                   <MessageSquare className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
                   <h3 className="font-semibold text-lg mb-2">Start Learning</h3>
-                  <p className="text-muted-foreground max-w-md mx-auto">
+                  <p className="text-muted-foreground max-w-md mx-auto mb-6">
                     Ask questions about your lecture notes, request step-by-step solutions, 
-                    or explore mathematical concepts. I'll use only your uploaded notes as context.
+                    or explore mathematical concepts. I'll use your uploaded notes as context.
                   </p>
-                  <div className="mt-6 flex flex-wrap justify-center gap-2">
+                  <div className="flex flex-wrap justify-center gap-2">
                     {[
-                      "Solve a limit problem",
-                      "Explain differentiation",
-                      "Show integration steps",
-                      "Help with differential equations",
+                      "Solve a limit problem from my notes",
+                      "Explain the chain rule",
+                      "Help me integrate ∫x²dx",
+                      "What is a differential equation?",
                     ].map((suggestion) => (
                       <Button
                         key={suggestion}
                         variant="outline"
                         size="sm"
-                        onClick={() => setInput(suggestion)}
+                        onClick={() => handleSuggestionClick(suggestion)}
                       >
                         {suggestion}
                       </Button>
@@ -273,7 +273,7 @@ export default function Solver() {
                 <div className="flex justify-start">
                   <div className="chat-message-assistant flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Thinking...</span>
+                    <span>Solving...</span>
                   </div>
                 </div>
               )}
@@ -293,7 +293,11 @@ export default function Solver() {
                 className="flex-1"
               />
               <Button type="submit" disabled={isSending || !input.trim()}>
-                <Send className="w-4 h-4" />
+                {isSending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
               </Button>
             </form>
           </div>

@@ -1,1 +1,7 @@
 project_id = "dwskvhzrlqbmwqmuqqkc"
+
+[functions.math-solver]
+verify_jwt = true
+
+[functions.process-notes]
+verify_jwt = true

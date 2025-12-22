@@ -93,20 +93,20 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
 
       if (uploadError) throw uploadError;
 
-      // Get public URL
+      // Get the file URL
       const { data: urlData } = supabase.storage
         .from("notes")
         .getPublicUrl(filePath);
 
-      // Create database record
-      const { error: dbError } = await supabase.from("notes").insert({
+      // Create database record with processing status
+      const { data: noteData, error: dbError } = await supabase.from("notes").insert({
         user_id: user.id,
         file_name: selectedFile.name,
         file_type: selectedFile.type,
         file_size: selectedFile.size,
         file_url: urlData.publicUrl,
         status: "processing",
-      });
+      }).select().single();
 
       if (dbError) throw dbError;
 
@@ -115,18 +115,21 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         description: "Your notes are being processed. This may take a moment.",
       });
 
-      // Trigger processing (edge function)
+      // Trigger processing via edge function
       supabase.functions.invoke("process-notes", {
-        body: { filePath, userId: user.id },
-      }).catch(console.error);
+        body: { filePath, userId: user.id, noteId: noteData.id },
+      }).catch((err) => {
+        console.error("Processing trigger error:", err);
+      });
 
+      setSelectedFile(null);
       onUploadComplete();
     } catch (error) {
       console.error("Upload error:", error);
       toast({
         variant: "destructive",
         title: "Upload failed",
-        description: "Please try again.",
+        description: error instanceof Error ? error.message : "Please try again.",
       });
     } finally {
       setIsUploading(false);
