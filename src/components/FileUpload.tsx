@@ -93,10 +93,9 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
 
       if (uploadError) throw uploadError;
 
-      // Get the file URL
-      const { data: urlData } = supabase.storage
-        .from("notes")
-        .getPublicUrl(filePath);
+      // Store the file path (not public URL) for secure signed URL generation later
+      // SECURITY: We don't use getPublicUrl() as the bucket is private
+      // Signed URLs will be generated on-demand when file access is needed
 
       // Create database record with processing status
       const { data: noteData, error: dbError } = await supabase.from("notes").insert({
@@ -104,7 +103,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         file_name: selectedFile.name,
         file_type: selectedFile.type,
         file_size: selectedFile.size,
-        file_url: urlData.publicUrl,
+        file_url: filePath, // Store path, not public URL - signed URLs generated on access
         status: "processing",
       }).select().single();
 
