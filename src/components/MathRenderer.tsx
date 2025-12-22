@@ -1,10 +1,32 @@
 import { useEffect, useRef } from "react";
 import katex from "katex";
+import DOMPurify from "dompurify";
 import "katex/dist/katex.min.css";
 
 interface MathRendererProps {
   content: string;
 }
+
+// Configure DOMPurify to allow KaTeX-generated elements
+const sanitizeConfig = {
+  ALLOWED_TAGS: [
+    'div', 'span', 'strong', 'em', 'br', 'p',
+    // KaTeX-specific elements
+    'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 
+    'mfrac', 'mover', 'munder', 'munderover', 'msqrt', 'mroot',
+    'mtable', 'mtr', 'mtd', 'mtext', 'mspace', 'annotation',
+    'svg', 'line', 'path', 'g', 'rect'
+  ],
+  ALLOWED_ATTR: [
+    'class', 'style', 'xmlns', 'width', 'height', 'viewBox',
+    'preserveAspectRatio', 'd', 'x', 'y', 'x1', 'x2', 'y1', 'y2',
+    'fill', 'stroke', 'stroke-width', 'transform', 'encoding',
+    'mathvariant', 'stretchy', 'fence', 'separator', 'accent',
+    'lspace', 'rspace', 'displaystyle', 'scriptlevel'
+  ],
+  ALLOW_DATA_ATTR: false,
+  ALLOW_UNKNOWN_PROTOCOLS: false,
+};
 
 export default function MathRenderer({ content }: MathRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -12,9 +34,9 @@ export default function MathRenderer({ content }: MathRendererProps) {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Process the content and render math
+    // Process the content and render math, then sanitize
     const processed = processContent(content);
-    containerRef.current.innerHTML = processed;
+    containerRef.current.innerHTML = DOMPurify.sanitize(processed, sanitizeConfig);
   }, [content]);
 
   const processContent = (text: string): string => {
