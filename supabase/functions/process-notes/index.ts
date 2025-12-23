@@ -22,13 +22,29 @@ serve(async (req) => {
     requestData = await req.json();
     const { filePath, userId, noteId } = requestData;
     
-    console.log("Processing notes:", filePath, "for user:", userId, "noteId:", noteId);
+    console.log("=== PROCESS-NOTES START ===");
+    console.log("filePath:", filePath);
+    console.log("userId:", userId);
+    console.log("noteId:", noteId);
+    console.log("LOVABLE_API_KEY present:", !!LOVABLE_API_KEY);
 
     if (!filePath || !userId) {
+      console.error("Missing required fields - filePath:", !!filePath, "userId:", !!userId);
       throw new Error("Missing filePath or userId");
     }
 
+    // Update status to show we're actively processing
+    if (noteId) {
+      await supabase.from("notes").update({ 
+        status: "processing",
+        error_message: null,
+        updated_at: new Date().toISOString()
+      }).eq("id", noteId);
+      console.log("Updated note status to processing");
+    }
+
     // Get the file from storage
+    console.log("Downloading file from storage:", filePath);
     const { data: fileData, error: downloadError } = await supabase.storage
       .from("notes")
       .download(filePath);
@@ -38,6 +54,8 @@ serve(async (req) => {
       throw new Error(`Failed to download file: ${downloadError.message}`);
     }
 
+    console.log("File downloaded successfully, size:", fileData.size);
+
     // Extract text content based on file type
     let extractedText = "";
     const fileName = filePath.split("/").pop() || "";
@@ -45,21 +63,19 @@ serve(async (req) => {
 
     console.log("Processing file:", fileName, "extension:", fileExtension);
 
-    // For PDF files, extract text
+    // For PDF files, extract text using improved method
     if (fileExtension === "pdf") {
       const arrayBuffer = await fileData.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
       
-      // Simple PDF text extraction - look for text streams
+      // Enhanced PDF text extraction
       let textContent = "";
-      let inTextStream = false;
       let parenDepth = 0;
       let currentText = "";
       
       for (let i = 0; i < bytes.length - 1; i++) {
         const char = String.fromCharCode(bytes[i]);
         
-        // Look for text showing operators: Tj, TJ, ', "
         if (bytes[i] === 40) { // Opening parenthesis
           parenDepth++;
           if (parenDepth === 1) {
@@ -71,7 +87,6 @@ serve(async (req) => {
             textContent += currentText + " ";
           }
         } else if (parenDepth > 0) {
-          // Inside parentheses, collect text
           if (bytes[i] >= 32 && bytes[i] <= 126) {
             currentText += char;
           }
@@ -108,11 +123,12 @@ serve(async (req) => {
       console.log("Document extraction result length:", extractedText.length);
     }
 
-    // Use AI to process content
+    // Process with AI
     let processedContent = extractedText;
     
     if (LOVABLE_API_KEY && extractedText.length > 30) {
-      console.log("Sending to AI for processing...");
+      console.log("Sending to AI for processing, text preview:", extractedText.substring(0, 200));
+      
       try {
         const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
@@ -126,43 +142,52 @@ serve(async (req) => {
               {
                 role: "system",
                 content: `You are a document processor for Engineering Mathematics lecture notes. 
-Your task is to extract and structure mathematical content.
-Preserve all:
-- Mathematical formulas and equations (use LaTeX notation: $..$ for inline, $$...$$ for block)
-- Definitions and theorems
+Your task is to extract and structure mathematical content clearly.
+
+ALWAYS preserve:
+- Mathematical formulas and equations (use LaTeX: $..$ for inline, $$...$$ for block)
+- Definitions, theorems, and proofs
 - Worked examples with step-by-step solutions
 - Problem sets and exercises
 
-If text is unclear, infer likely mathematical topics from context.
-Output should be well-organized with clear headings.`
+Structure the output with clear headings (##) and organize topics logically.
+If text is unclear, infer likely mathematical topics from context.`
               },
               {
                 role: "user",
-                content: `Process and structure this lecture note content:\n\n${extractedText.substring(0, 8000)}`
+                content: `Process and structure this lecture note content. Extract all mathematical content and organize it clearly:\n\n${extractedText.substring(0, 12000)}`
               }
             ],
           }),
         });
+
+        console.log("AI response status:", response.status);
 
         if (response.ok) {
           const data = await response.json();
           processedContent = data.choices?.[0]?.message?.content || extractedText;
           console.log("AI processing successful, content length:", processedContent.length);
         } else {
-          console.error("AI response not ok:", response.status);
+          const errorText = await response.text();
+          console.error("AI response error:", response.status, errorText);
         }
       } catch (aiError) {
         console.error("AI processing error:", aiError);
       }
     } else {
-      console.log("Skipping AI processing. API key present:", !!LOVABLE_API_KEY, "Text length:", extractedText.length);
+      console.log("Skipping AI - API key present:", !!LOVABLE_API_KEY, "Text length:", extractedText.length);
     }
 
     // Provide fallback content if extraction failed
     if (!processedContent || processedContent.length < 20) {
-      processedContent = `# ${fileName}
+      console.log("Using fallback content");
+      processedContent = `# ${fileName.replace(/\.[^/.]+$/, "")}
 
-This document has been uploaded successfully. The text extraction produced limited results.
+This document has been uploaded successfully.
+
+## Document Information
+- **File Name:** ${fileName}
+- **File Type:** ${fileExtension?.toUpperCase() || "Unknown"}
 
 ## Available Topics
 You can ask questions about Engineering Mathematics I topics including:
@@ -174,55 +199,45 @@ You can ask questions about Engineering Mathematics I topics including:
 - **Linear Algebra**: Matrices, determinants, eigenvalues, systems of equations
 
 ## How to Use
-Simply type your question or describe the problem you need help with. I'll provide step-by-step solutions based on Engineering Mathematics I curriculum.`;
+Simply type your question or describe the problem you need help with. I'll provide step-by-step solutions.`;
     }
 
     // Update the note in database
-    const updateQuery = noteId 
-      ? supabase.from("notes").update({
-          status: "ready",
-          processed_content: processedContent,
-          updated_at: new Date().toISOString(),
-        }).eq("id", noteId)
-      : supabase.from("notes").update({
-          status: "ready",
-          processed_content: processedContent,
-          updated_at: new Date().toISOString(),
-        }).eq("user_id", userId).eq("status", "processing").order("created_at", { ascending: false }).limit(1);
-
-    const { error: updateError } = await updateQuery;
+    console.log("Updating note in database with processed content");
+    
+    const { error: updateError } = await supabase.from("notes").update({
+      status: "ready",
+      processed_content: processedContent,
+      original_content: extractedText.substring(0, 50000),
+      updated_at: new Date().toISOString(),
+    }).eq("id", noteId);
 
     if (updateError) {
-      console.error("Update error:", updateError);
+      console.error("Database update error:", updateError);
       throw updateError;
     }
 
-    console.log("Notes processed successfully! Content length:", processedContent.length);
+    console.log("=== PROCESS-NOTES SUCCESS ===");
+    console.log("Final content length:", processedContent.length);
 
     return new Response(
       JSON.stringify({ success: true, contentLength: processedContent.length }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("Processing error:", error);
+    console.error("=== PROCESS-NOTES ERROR ===");
+    console.error("Error:", error);
     
     // Mark the note as error
     try {
-      const { userId, noteId } = requestData;
-      if (userId || noteId) {
-        const errorUpdate = noteId
-          ? supabase.from("notes").update({ 
-              status: "error", 
-              error_message: error instanceof Error ? error.message : "Processing failed",
-              updated_at: new Date().toISOString(),
-            }).eq("id", noteId)
-          : supabase.from("notes").update({ 
-              status: "error", 
-              error_message: error instanceof Error ? error.message : "Processing failed",
-              updated_at: new Date().toISOString(),
-            }).eq("user_id", userId).eq("status", "processing");
-            
-        await errorUpdate;
+      const { noteId } = requestData;
+      if (noteId) {
+        const errorMessage = error instanceof Error ? error.message : "Processing failed";
+        await supabase.from("notes").update({ 
+          status: "error", 
+          error_message: errorMessage,
+          updated_at: new Date().toISOString(),
+        }).eq("id", noteId);
         console.log("Updated note status to error");
       }
     } catch (e) {

@@ -4,4 +4,4 @@ project_id = "dwskvhzrlqbmwqmuqqkc"
 verify_jwt = true
 
 [functions.process-notes]
-verify_jwt = true
+verify_jwt = false

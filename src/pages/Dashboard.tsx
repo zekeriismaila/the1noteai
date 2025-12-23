@@ -20,10 +20,9 @@ import {
   Calculator,
   RefreshCw,
   Menu,
-  User,
-  Settings,
   HelpCircle,
-  X
+  X,
+  Eye
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -43,6 +42,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import FileUpload from "@/components/FileUpload";
 import ToolsPanel from "@/components/ToolsPanel";
+import NoteViewer from "@/components/NoteViewer";
 
 interface Note {
   id: string;
@@ -66,6 +66,7 @@ export default function Dashboard() {
   const [showUpload, setShowUpload] = useState(false);
   const [showTools, setShowTools] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [viewingNoteId, setViewingNoteId] = useState<string | null>(null);
   
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
@@ -203,6 +204,11 @@ export default function Dashboard() {
   const handleUploadComplete = () => {
     setShowUpload(false);
     fetchNotes();
+  };
+
+  const handleViewNote = (noteId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setViewingNoteId(noteId);
   };
 
   const getStatusBadge = (status: string, errorMessage: string | null) => {
@@ -421,7 +427,7 @@ export default function Dashboard() {
                   <div>
                     <h3 className="font-semibold">Upload Lecture Notes</h3>
                     <p className="text-sm text-muted-foreground">
-                      Upload PDF, DOC, DOCX, PPT, or PPTX files. Maximum 50MB per file.
+                      Upload PDF, DOC, DOCX, PPT, PPTX, or TXT files. Maximum 50MB per file.
                     </p>
                   </div>
                   <Button 
@@ -465,7 +471,7 @@ export default function Dashboard() {
                   <Card 
                     key={note.id} 
                     className={`hover:shadow-md transition-shadow ${note.status === "ready" ? "cursor-pointer" : ""}`}
-                    onClick={() => note.status === "ready" && navigate(`/solver/${note.id}`)}
+                    onClick={() => note.status === "ready" && setViewingNoteId(note.id)}
                   >
                     <CardContent className="flex items-center justify-between py-4">
                       <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -487,22 +493,32 @@ export default function Dashboard() {
                         </div>
                       </div>
                       
-                      <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-4">
                         {getStatusBadge(note.status, note.error_message)}
                         
                         {note.status === "ready" && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              navigate(`/solver/${note.id}`);
-                            }}
-                            className="hidden sm:flex"
-                          >
-                            <MessageSquare className="w-4 h-4 mr-2" />
-                            Study
-                          </Button>
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => handleViewNote(note.id, e)}
+                              title="View Notes"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/solver/${note.id}`);
+                              }}
+                              className="hidden sm:flex"
+                            >
+                              <MessageSquare className="w-4 h-4 mr-2" />
+                              Study
+                            </Button>
+                          </>
                         )}
                         
                         {note.status === "error" && (
@@ -570,6 +586,15 @@ export default function Dashboard() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Note Viewer Dialog */}
+      {viewingNoteId && (
+        <NoteViewer
+          noteId={viewingNoteId}
+          open={!!viewingNoteId}
+          onClose={() => setViewingNoteId(null)}
+        />
+      )}
     </div>
   );
 }
