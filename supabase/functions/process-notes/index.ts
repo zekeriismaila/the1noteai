@@ -16,9 +16,17 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseKey);
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 
+  let requestData: { filePath?: string; userId?: string; noteId?: string } = {};
+
   try {
-    const { filePath, userId } = await req.json();
-    console.log("Processing notes:", filePath, "for user:", userId);
+    requestData = await req.json();
+    const { filePath, userId, noteId } = requestData;
+    
+    console.log("Processing notes:", filePath, "for user:", userId, "noteId:", noteId);
+
+    if (!filePath || !userId) {
+      throw new Error("Missing filePath or userId");
+    }
 
     // Get the file from storage
     const { data: fileData, error: downloadError } = await supabase.storage
@@ -35,37 +43,76 @@ serve(async (req) => {
     const fileName = filePath.split("/").pop() || "";
     const fileExtension = fileName.split(".").pop()?.toLowerCase();
 
-    // For PDF files, we'll extract what we can
+    console.log("Processing file:", fileName, "extension:", fileExtension);
+
+    // For PDF files, extract text
     if (fileExtension === "pdf") {
-      // Basic PDF text extraction - in production use a proper PDF parser
       const arrayBuffer = await fileData.arrayBuffer();
-      const text = new TextDecoder().decode(arrayBuffer);
+      const bytes = new Uint8Array(arrayBuffer);
       
-      // Try to extract readable text from PDF
-      const textMatches = text.match(/\((.*?)\)/g);
-      if (textMatches) {
-        extractedText = textMatches
-          .map(m => m.slice(1, -1))
-          .filter(t => t.length > 1 && /[a-zA-Z0-9]/.test(t))
-          .join(" ");
+      // Simple PDF text extraction - look for text streams
+      let textContent = "";
+      let inTextStream = false;
+      let parenDepth = 0;
+      let currentText = "";
+      
+      for (let i = 0; i < bytes.length - 1; i++) {
+        const char = String.fromCharCode(bytes[i]);
+        
+        // Look for text showing operators: Tj, TJ, ', "
+        if (bytes[i] === 40) { // Opening parenthesis
+          parenDepth++;
+          if (parenDepth === 1) {
+            currentText = "";
+          }
+        } else if (bytes[i] === 41) { // Closing parenthesis
+          parenDepth--;
+          if (parenDepth === 0 && currentText.length > 0) {
+            textContent += currentText + " ";
+          }
+        } else if (parenDepth > 0) {
+          // Inside parentheses, collect text
+          if (bytes[i] >= 32 && bytes[i] <= 126) {
+            currentText += char;
+          }
+        }
       }
+      
+      // Clean up extracted text
+      extractedText = textContent
+        .replace(/\\[nrtbf]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+        
+      console.log("PDF extraction result length:", extractedText.length);
     } else {
-      // For DOC/DOCX/PPT/PPTX, try to extract text
+      // For DOC/DOCX/PPT/PPTX
       const arrayBuffer = await fileData.arrayBuffer();
       const text = new TextDecoder("utf-8", { fatal: false }).decode(arrayBuffer);
       
-      // Extract readable content
-      extractedText = text
-        .replace(/<[^>]*>/g, " ")
-        .replace(/[^\x20-\x7E\n]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+      // Try to extract XML content for DOCX/PPTX
+      const xmlMatches = text.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+      if (xmlMatches) {
+        extractedText = xmlMatches
+          .map(m => m.replace(/<[^>]+>/g, ""))
+          .join(" ");
+      } else {
+        // Fallback: extract readable content
+        extractedText = text
+          .replace(/<[^>]*>/g, " ")
+          .replace(/[^\x20-\x7E\n]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+      
+      console.log("Document extraction result length:", extractedText.length);
     }
 
-    // If we got content, use AI to enhance and structure it
+    // Use AI to process content
     let processedContent = extractedText;
     
-    if (LOVABLE_API_KEY && extractedText.length > 50) {
+    if (LOVABLE_API_KEY && extractedText.length > 30) {
+      console.log("Sending to AI for processing...");
       try {
         const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
@@ -74,23 +121,24 @@ serve(async (req) => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: "google/gemini-2.5-flash",
+            model: "google/gemini-2.5-flash-lite",
             messages: [
               {
                 role: "system",
-                content: `You are a document processor for Engineering Mathematics I lecture notes. 
-Extract and structure the mathematical content from the following text.
+                content: `You are a document processor for Engineering Mathematics lecture notes. 
+Your task is to extract and structure mathematical content.
 Preserve all:
-- Mathematical formulas and equations
-- Definitions and theorems  
-- Worked examples
-- Problem sets
-Format equations in LaTeX notation where possible.
-If the text is garbled or unreadable, summarize what topics seem to be covered.`
+- Mathematical formulas and equations (use LaTeX notation: $..$ for inline, $$...$$ for block)
+- Definitions and theorems
+- Worked examples with step-by-step solutions
+- Problem sets and exercises
+
+If text is unclear, infer likely mathematical topics from context.
+Output should be well-organized with clear headings.`
               },
               {
                 role: "user",
-                content: `Process this lecture note content:\n\n${extractedText.substring(0, 10000)}`
+                content: `Process and structure this lecture note content:\n\n${extractedText.substring(0, 8000)}`
               }
             ],
           }),
@@ -99,59 +147,57 @@ If the text is garbled or unreadable, summarize what topics seem to be covered.`
         if (response.ok) {
           const data = await response.json();
           processedContent = data.choices?.[0]?.message?.content || extractedText;
+          console.log("AI processing successful, content length:", processedContent.length);
+        } else {
+          console.error("AI response not ok:", response.status);
         }
       } catch (aiError) {
         console.error("AI processing error:", aiError);
-        // Continue with raw extracted text
       }
+    } else {
+      console.log("Skipping AI processing. API key present:", !!LOVABLE_API_KEY, "Text length:", extractedText.length);
     }
 
-    // If no content was extracted, use a placeholder
+    // Provide fallback content if extraction failed
     if (!processedContent || processedContent.length < 20) {
-      processedContent = `Document: ${fileName}
+      processedContent = `# ${fileName}
 
-This document has been uploaded successfully. The system was unable to extract detailed text content from this file format.
+This document has been uploaded successfully. The text extraction produced limited results.
 
-You can still ask questions about Engineering Mathematics I topics, and I'll help you with:
-- Limits and continuity
-- Differentiation techniques
-- Integration methods
-- Differential equations
-- Linear algebra concepts
+## Available Topics
+You can ask questions about Engineering Mathematics I topics including:
 
-Please describe the problems or concepts you'd like help with!`;
+- **Limits and Continuity**: Finding limits, L'Hôpital's rule, continuity tests
+- **Differentiation**: Power rule, chain rule, product/quotient rules, implicit differentiation
+- **Integration**: Substitution, integration by parts, partial fractions
+- **Differential Equations**: First-order ODEs, separable equations, linear equations
+- **Linear Algebra**: Matrices, determinants, eigenvalues, systems of equations
+
+## How to Use
+Simply type your question or describe the problem you need help with. I'll provide step-by-step solutions based on Engineering Mathematics I curriculum.`;
     }
 
-    // Find and update the note by user_id and most recent
-    const { data: notes, error: findError } = await supabase
-      .from("notes")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("status", "processing")
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (findError) {
-      console.error("Find error:", findError);
-      throw findError;
-    }
-
-    if (notes && notes.length > 0) {
-      const { error: updateError } = await supabase
-        .from("notes")
-        .update({
+    // Update the note in database
+    const updateQuery = noteId 
+      ? supabase.from("notes").update({
           status: "ready",
           processed_content: processedContent,
-        })
-        .eq("id", notes[0].id);
+          updated_at: new Date().toISOString(),
+        }).eq("id", noteId)
+      : supabase.from("notes").update({
+          status: "ready",
+          processed_content: processedContent,
+          updated_at: new Date().toISOString(),
+        }).eq("user_id", userId).eq("status", "processing").order("created_at", { ascending: false }).limit(1);
 
-      if (updateError) {
-        console.error("Update error:", updateError);
-        throw updateError;
-      }
+    const { error: updateError } = await updateQuery;
+
+    if (updateError) {
+      console.error("Update error:", updateError);
+      throw updateError;
     }
 
-    console.log("Notes processed successfully, content length:", processedContent.length);
+    console.log("Notes processed successfully! Content length:", processedContent.length);
 
     return new Response(
       JSON.stringify({ success: true, contentLength: processedContent.length }),
@@ -160,19 +206,24 @@ Please describe the problems or concepts you'd like help with!`;
   } catch (error) {
     console.error("Processing error:", error);
     
-    // Try to mark the note as error
+    // Mark the note as error
     try {
-      const { filePath, userId } = await req.json().catch(() => ({}));
-      if (userId) {
-        const supabase2 = createClient(supabaseUrl, supabaseKey);
-        await supabase2
-          .from("notes")
-          .update({ 
-            status: "error", 
-            error_message: error instanceof Error ? error.message : "Processing failed" 
-          })
-          .eq("user_id", userId)
-          .eq("status", "processing");
+      const { userId, noteId } = requestData;
+      if (userId || noteId) {
+        const errorUpdate = noteId
+          ? supabase.from("notes").update({ 
+              status: "error", 
+              error_message: error instanceof Error ? error.message : "Processing failed",
+              updated_at: new Date().toISOString(),
+            }).eq("id", noteId)
+          : supabase.from("notes").update({ 
+              status: "error", 
+              error_message: error instanceof Error ? error.message : "Processing failed",
+              updated_at: new Date().toISOString(),
+            }).eq("user_id", userId).eq("status", "processing");
+            
+        await errorUpdate;
+        console.log("Updated note status to error");
       }
     } catch (e) {
       console.error("Failed to update error status:", e);

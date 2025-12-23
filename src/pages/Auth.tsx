@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,18 +7,25 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { BookOpen, Mail, Lock, User, Loader2 } from "lucide-react";
+import { BookOpen, Mail, Lock, User, Loader2, ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { z } from "zod";
 
 const emailSchema = z.string().email("Please enter a valid email address");
-const passwordSchema = z.string().min(6, "Password must be at least 6 characters");
+const passwordSchema = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
+  .regex(/[a-z]/, "Password must contain at least one lowercase letter")
+  .regex(/[0-9]/, "Password must contain at least one number");
 
 export default function Auth() {
   const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [activeTab, setActiveTab] = useState("signin");
   
   const { signIn, signUp, signInWithGoogle, user } = useAuth();
   const navigate = useNavigate();
@@ -30,7 +37,7 @@ export default function Auth() {
     }
   }, [user, navigate]);
 
-  const validateForm = () => {
+  const validateForm = (isSignUp: boolean = false) => {
     const newErrors: { email?: string; password?: string } = {};
     
     const emailResult = emailSchema.safeParse(email);
@@ -38,9 +45,15 @@ export default function Auth() {
       newErrors.email = emailResult.error.errors[0].message;
     }
     
-    const passwordResult = passwordSchema.safeParse(password);
-    if (!passwordResult.success) {
-      newErrors.password = passwordResult.error.errors[0].message;
+    if (isSignUp) {
+      const passwordResult = passwordSchema.safeParse(password);
+      if (!passwordResult.success) {
+        newErrors.password = passwordResult.error.errors[0].message;
+      }
+    } else {
+      if (password.length < 6) {
+        newErrors.password = "Password must be at least 6 characters";
+      }
     }
     
     setErrors(newErrors);
@@ -49,7 +62,7 @@ export default function Auth() {
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validateForm()) return;
+    if (!validateForm(false)) return;
     
     setIsLoading(true);
     const { error } = await signIn(email, password);
@@ -64,13 +77,17 @@ export default function Auth() {
           : error.message,
       });
     } else {
+      toast({
+        title: "Welcome back!",
+        description: "You've been signed in successfully.",
+      });
       navigate("/dashboard");
     }
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validateForm()) return;
+    if (!validateForm(true)) return;
     
     setIsLoading(true);
     const { error } = await signUp(email, password, fullName);
@@ -88,8 +105,8 @@ export default function Auth() {
       });
     } else {
       toast({
-        title: "Account created",
-        description: "You can now sign in with your credentials.",
+        title: "Account created!",
+        description: "Welcome to 1Note! You're now signed in.",
       });
       navigate("/dashboard");
     }
@@ -106,12 +123,34 @@ export default function Auth() {
         description: error.message,
       });
     }
+    // Note: Loading state will persist during redirect
   };
+
+  const getPasswordStrength = () => {
+    if (!password) return null;
+    let strength = 0;
+    if (password.length >= 8) strength++;
+    if (/[A-Z]/.test(password)) strength++;
+    if (/[a-z]/.test(password)) strength++;
+    if (/[0-9]/.test(password)) strength++;
+    if (/[^A-Za-z0-9]/.test(password)) strength++;
+    
+    if (strength <= 2) return { label: "Weak", color: "bg-destructive" };
+    if (strength <= 3) return { label: "Fair", color: "bg-warning" };
+    if (strength <= 4) return { label: "Good", color: "bg-success/70" };
+    return { label: "Strong", color: "bg-success" };
+  };
+
+  const passwordStrength = getPasswordStrength();
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
+          <Link to="/" className="inline-flex items-center gap-2 text-muted-foreground hover:text-foreground mb-4">
+            <ArrowLeft className="w-4 h-4" />
+            Back to home
+          </Link>
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary text-primary-foreground mb-4">
             <BookOpen className="w-8 h-8" />
           </div>
@@ -120,7 +159,7 @@ export default function Auth() {
         </div>
 
         <Card>
-          <Tabs defaultValue="signin" className="w-full">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <CardHeader className="pb-4">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="signin">Sign In</TabsTrigger>
@@ -143,6 +182,7 @@ export default function Auth() {
                         onChange={(e) => setEmail(e.target.value)}
                         className="pl-10"
                         disabled={isLoading}
+                        autoComplete="email"
                       />
                     </div>
                     {errors.email && (
@@ -156,17 +196,34 @@ export default function Auth() {
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="signin-password"
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         placeholder="••••••••"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="pl-10"
+                        className="pl-10 pr-10"
                         disabled={isLoading}
+                        autoComplete="current-password"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
                     {errors.password && (
                       <p className="text-sm text-destructive">{errors.password}</p>
                     )}
+                  </div>
+
+                  <div className="text-right">
+                    <Link 
+                      to="/forgot-password" 
+                      className="text-sm text-accent hover:underline"
+                    >
+                      Forgot password?
+                    </Link>
                   </div>
 
                   <Button type="submit" className="w-full" disabled={isLoading}>
@@ -196,6 +253,7 @@ export default function Auth() {
                         onChange={(e) => setFullName(e.target.value)}
                         className="pl-10"
                         disabled={isLoading}
+                        autoComplete="name"
                       />
                     </div>
                   </div>
@@ -212,6 +270,7 @@ export default function Auth() {
                         onChange={(e) => setEmail(e.target.value)}
                         className="pl-10"
                         disabled={isLoading}
+                        autoComplete="email"
                       />
                     </div>
                     {errors.email && (
@@ -225,16 +284,40 @@ export default function Auth() {
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="signup-password"
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         placeholder="••••••••"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="pl-10"
+                        className="pl-10 pr-10"
                         disabled={isLoading}
+                        autoComplete="new-password"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
                     {errors.password && (
                       <p className="text-sm text-destructive">{errors.password}</p>
+                    )}
+                    {activeTab === "signup" && password && passwordStrength && (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full ${passwordStrength.color} transition-all`}
+                              style={{ width: `${(password.length >= 8 ? 25 : 0) + (/[A-Z]/.test(password) ? 25 : 0) + (/[a-z]/.test(password) ? 25 : 0) + (/[0-9]/.test(password) ? 25 : 0)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-muted-foreground">{passwordStrength.label}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Must be 8+ characters with uppercase, lowercase, and number
+                        </p>
+                      </div>
                     )}
                   </div>
 
