@@ -62,7 +62,6 @@ export default function Index() {
         <div className="max-w-3xl mx-auto text-center">
           <div className="inline-flex items-center gap-2 bg-secondary text-secondary-foreground px-4 py-2 rounded-full text-sm mb-6">
             <span className="w-2 h-2 rounded-full bg-accent"></span>
-            Engineering Mathematics I
           </div>
           
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6">
